@@ -1,0 +1,128 @@
+name: Convertisseur autonome
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Modele d'app
+        run: |
+          mkdir -p shell/app/src/main/java/com/zz/shell
+          cat > shell/settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "shell"
+          include(":app")
+          EOF
+          cat > shell/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+          }
+          EOF
+          printf 'org.gradle.jvmargs=-Xmx2048m\nandroid.useAndroidX=false\n' > shell/gradle.properties
+          cat > shell/app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+          }
+          android {
+              namespace = "com.zz.shell"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.zz.xxxxxxxxxxxxxxxxxxxx"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+          EOF
+          cat > shell/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:label="LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > shell/app/src/main/java/com/zz/shell/MainActivity.java <<'EOF'
+          package com.zz.shell;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+              private WebView w;
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  w = new WebView(this);
+                  setContentView(w);
+                  WebSettings s = w.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  w.setWebViewClient(new WebViewClient());
+                  w.setWebChromeClient(new WebChromeClient());
+                  w.loadUrl("file:///android_asset/index.html");
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (w.canGoBack()) w.goBack(); else super.onBackPressed();
+              }
+          }
+          EOF
+      - run: cd shell && gradle assembleDebug
+      - name: Cles de signature
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 36500 -subj "/CN=Convertisseur"
+          openssl pkcs8 -topk8 -nocrypt -in key.pem -outform DER -out key.der
+          openssl x509 -in cert.pem -outform DER -out cert.der
+          openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform DER -out spki.der
+      - name: Assembler le convertisseur
+        run: |
+          mkdir -p final
+          python3 - <<'EOF'
+          import base64, zipfile
+          apk = "shell/app/build/outputs/apk/debug/app-debug.apk"
+          m = zipfile.ZipFile(apk).read("AndroidManifest.xml")
+          for p in ["L" * 32, "com.zz." + "x" * 20]:
+              assert p.encode() in m or p.encode("utf-16le") in m, "Modele invalide : " + p
+          b = lambda f: base64.b64encode(open(f, "rb").read()).decode()
+          h = open("convertisseur.html", encoding="utf-8").read()
+          for k, f in [("__TPL__", apk), ("__KEY__", "key.der"), ("__CERT__", "cert.der"), ("__SPKI__", "spki.der")]:
+              assert k in h, k
+              h = h.replace(k, b(f))
+          open("final/convertisseur.html", "w", encoding="utf-8").write(h)
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: convertisseur
+          path: final/convertisseur.html
