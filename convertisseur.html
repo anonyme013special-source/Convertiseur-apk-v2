@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Convertisseur APK</title>
+<style>
+:root{--bg:#060912;--pan:#0e1424;--line:#1c2742;--fg:#eef2ff;--mut:#7f8bab;--blue:#19b5ff;--green:#3ddc84;--red:#ff6b7a}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;color:var(--fg);font-family:system-ui,sans-serif;background:radial-gradient(120% 55% at 50% -8%,#10306a 0%,var(--bg) 62%) no-repeat,var(--bg);padding:max(22px,env(safe-area-inset-top)) 18px 48px}
+main{max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+h1{font-size:1.6rem;margin:4px 0 0;text-align:center}
+.sub{margin:0;color:var(--mut);font-size:.92rem;text-align:center}
+.card{background:var(--pan);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px}
+input[type=text]{width:100%;padding:13px 14px;border-radius:12px;border:1px solid var(--line);background:#0a1020;color:var(--fg);font:inherit;font-size:1rem}
+.pick{position:relative;display:block;border:1.5px dashed #2c3c66;border-radius:14px;padding:22px 14px;text-align:center;color:var(--mut)}
+.pick.ok{border-style:solid;border-color:var(--green);color:var(--fg)}
+.pick input{position:absolute;inset:0;width:100%;height:100%;opacity:0}
+button,a.dl{width:100%;padding:16px;border:0;border-radius:14px;font:inherit;font-weight:700;font-size:1.05rem;text-align:center;text-decoration:none;display:block}
+#go{background:var(--blue);color:#00131f}
+#go:disabled{opacity:.4}
+a.dl,#sh{display:none;background:var(--green);color:#03180c}
+#msg{text-align:center;color:var(--mut);font-size:.95rem;min-height:2.6em;line-height:1.35;word-break:break-word}
+#msg.err{color:var(--red)}
+</style>
+</head>
+<body>
+<main>
+<h1>Convertisseur APK</h1>
+<p class="sub">Tout se passe sur ton téléphone, sans internet.</p>
+<section class="card">
+  <label class="pick" id="pk">Choisir le fichier HTML de l'app<input id="html" type="file" accept=".html,text/html"></label>
+  <input id="name" type="text" value="Mon App" placeholder="Nom de l'app">
+  <button id="go" type="button" disabled>Créer l'APK</button>
+  <div id="msg">Choisis d'abord un fichier HTML.</div>
+  <a id="dl" class="dl" href="#">Télécharger l'APK</a>
+  <button id="sh" type="button">Partager / enregistrer l'APK</button>
+</section>
+</main>
+<script>
+var TPLB64="__TPL__",KEYB64="__KEY__",CERTB64="__CERT__",SPKIB64="__SPKI__";
+function d64(s){var b=atob(s),u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u}
+var CT=(function(){var t=[];for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+function crc32(b){var c=0xFFFFFFFF;for(var i=0;i<b.length;i++)c=CT[(c^b[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0}
+function cat(a){var n=0;a.forEach(function(x){n+=x.length});var o=new Uint8Array(n),p=0;a.forEach(function(x){o.set(x,p);p+=x.length});return o}
+function u32(n){var b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);return b}
+function u16(n){var b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);return b}
+function u64(n){var b=new Uint8Array(8);new DataView(b.buffer).setUint32(0,n,true);return b}
+function lp(b){return cat([u32(b.length),b])}
+function str(s){return new TextEncoder().encode(s)}
+async function sha(b){return new Uint8Array(await crypto.subtle.digest("SHA-256",b))}
+async function inflate(b){var s=new Blob([b]).stream().pipeThrough(new DecompressionStream("deflate-raw"));return new Uint8Array(await new Response(s).arrayBuffer())}
+function readZip(z){
+  var v=new DataView(z.buffer,z.byteOffset,z.byteLength),e=z.length-22;
+  while(e>=0&&v.getUint32(e,true)!==0x06054b50)e--;
+  if(e<0)throw new Error("Modèle APK invalide");
+  var n=v.getUint16(e+10,true),p=v.getUint32(e+16,true),out=[];
+  for(var i=0;i<n;i++){
+    var nl=v.getUint16(p+28,true),el=v.getUint16(p+30,true),cl=v.getUint16(p+32,true),lo=v.getUint32(p+42,true);
+    var ln=v.getUint16(lo+26,true),le=v.getUint16(lo+28,true),ds=lo+30+ln+le,cs=v.getUint32(p+20,true);
+    out.push({name:new TextDecoder().decode(z.subarray(p+46,p+46+nl)),method:v.getUint16(p+10,true),crc:v.getUint32(p+16,true),usize:v.getUint32(p+24,true),data:z.subarray(ds,ds+cs)});
+    p+=46+nl+el+cl;
+  }
+  return out;
+}
+function writeZip(es){
+  var body=[],cd=[],pos=0;
+  es.forEach(function(e){
+    var nm=str(e.name),pad=e.method===0?(4-((pos+30+nm.length)%4))%4:0;
+    var h=cat([u32(0x04034b50),u16(20),u16(0),u16(e.method),u16(0),u16(0x21),u32(e.crc),u32(e.data.length),u32(e.usize),u16(nm.length),u16(pad),nm,new Uint8Array(pad)]);
+    body.push(h,e.data);
+    cd.push(cat([u32(0x02014b50),u16(20),u16(20),u16(0),u16(e.method),u16(0),u16(0x21),u32(e.crc),u32(e.data.length),u32(e.usize),u16(nm.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(pos),nm]));
+    pos+=h.length+e.data.length;
+  });
+  return{body:cat(body),cd:cat(cd),n:es.length};
+}
+function eocd(n,s,o){return cat([u32(0x06054b50),u16(0),u16(0),u16(n),u16(n),u32(s),u32(o),u16(0)])}
+async function signApk(z,keyDer,cert,spki){
+  var cdOff=z.body.length,ds=[];
+  for(var s of [z.body,z.cd,eocd(z.n,z.cd.length,cdOff)])
+    for(var o=0;o<s.length;o+=1048576){var c=s.subarray(o,Math.min(o+1048576,s.length));ds.push(await sha(cat([new Uint8Array([0xa5]),u32(c.length),c])))}
+  var top=await sha(cat([new Uint8Array([0x5a]),u32(ds.length),cat(ds)]));
+  var sd=cat([lp(lp(cat([u32(0x0103),lp(top)]))),lp(lp(cert)),u32(0)]);
+  var key=await crypto.subtle.importKey("pkcs8",keyDer,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["sign"]);
+  var sig=new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5",key,sd));
+  var signer=cat([lp(sd),lp(lp(cat([u32(0x0103),lp(sig)]))),lp(spki)]);
+  var val=lp(lp(signer)),pair=cat([u64(4+val.length),u32(0x7109871a),val]);
+  var blk=cat([u64(pair.length+24),pair,u64(pair.length+24),str("APK Sig Block 42")]);
+  return cat([z.body,blk,z.cd,eocd(z.n,z.cd.length,cdOff+blk.length)]);
+}
+function swap(b,from,to){
+  var n=from.length,i,j,ok;
+  for(i=0;i+n<=b.length;i++){ok=true;for(j=0;j<n&&ok;j++)ok=b[i+j]===from.charCodeAt(j);if(ok)for(j=0;j<n;j++)b[i+j]=to.charCodeAt(j)}
+  for(i=0;i+2*n<=b.length;i++){ok=true;for(j=0;j<n&&ok;j++)ok=b[i+2*j]===from.charCodeAt(j)&&b[i+2*j+1]===0;if(ok)for(j=0;j<n;j++){b[i+2*j]=to.charCodeAt(j);b[i+2*j+1]=0}}
+}
+async function makeApk(tpl,html,name){
+  var es=readZip(tpl).filter(function(e){return e.name.indexOf("META-INF/")!==0});
+  var label=name.normalize("NFD").replace(/[^\x20-\x7e]/g,"").trim().slice(0,32)||"App";
+  var hex=Array.from(await sha(str(name))).map(function(x){return("0"+x.toString(16)).slice(-2)}).join("");
+  for(var e of es)if(e.name==="AndroidManifest.xml"){
+    var m=e.method===0?new Uint8Array(e.data):await inflate(e.data);
+    swap(m,"LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",label.padEnd(32," "));
+    swap(m,"com.zz.xxxxxxxxxxxxxxxxxxxx","com.zz.a"+hex.slice(0,19));
+    e.method=0;e.data=m;e.usize=m.length;e.crc=crc32(m);
+  }
+  es.push({name:"assets/index.html",method:0,crc:crc32(html),usize:html.length,data:html});
+  return signApk(writeZip(es),d64(KEYB64),d64(CERTB64),d64(SPKIB64));
+}
+
+var $=function(i){return document.getElementById(i)},file=null,touched=false,apkBlob=null,apkName="";
+function msg(t,e){$("msg").textContent=t;$("msg").className=e?"err":""}
+$("name").oninput=function(){touched=true};
+$("html").onchange=function(){
+  file=this.files[0];if(!file)return;
+  $("pk").className="pick ok";$("pk").firstChild.textContent=file.name;
+  if(!touched){var n=file.name.replace(/\.[^.]+$/,"").replace(/[-_]+/g," ").trim();$("name").value=n.charAt(0).toUpperCase()+n.slice(1)}
+  $("go").disabled=false;$("dl").style.display="none";$("sh").style.display="none";msg("Prêt. Touche Créer l'APK.");
+};
+$("go").onclick=async function(){
+  if(!file)return;
+  $("go").disabled=true;msg("Création de l'APK…");
+  try{
+    var html=new Uint8Array(await file.arrayBuffer()),nm=$("name").value.trim()||"Mon App";
+    var out=await makeApk(d64(TPLB64),html,nm);
+    apkName=(nm.replace(/[^A-Za-z0-9]+/g,"_")||"app")+".apk";
+    apkBlob=new Blob([out],{type:"application/vnd.android.package-archive"});
+    $("dl").href=URL.createObjectURL(apkBlob);$("dl").download=apkName;$("dl").style.display="block";
+    var f=new File([apkBlob],apkName,{type:apkBlob.type});
+    if(navigator.canShare&&navigator.canShare({files:[f]}))$("sh").style.display="block";
+    msg("APK prêt ("+Math.round(out.length/1024)+" Ko). Télécharge-le puis ouvre le fichier pour l'installer.");
+  }catch(e){msg("Erreur : "+e.message,1)}
+  $("go").disabled=false;
+};
+$("sh").onclick=function(){
+  try{navigator.share({files:[new File([apkBlob],apkName,{type:apkBlob.type})]})}catch(e){msg("Partage impossible : "+e.message,1)}
+};
+</script>
+</body>
+</html>
